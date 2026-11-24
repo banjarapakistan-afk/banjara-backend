@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+coverage/
+.DS_Store
+uploads/
+.vscode/
+.idea/
+.local-mongodb/
+.local-demo/
+DEMO-ACCOUNTS.local.md
+
+# Tesseract downloads this OCR language data at runtime
+eng.traineddata
+*.traineddata
