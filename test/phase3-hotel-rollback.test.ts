@@ -51,10 +51,12 @@ describe('Phase 3.2 — hotel rollback must not release other bookings', () => {
     const { room } = await makeRoom(app);
     const roomId = room._id.toString();
     const FIRST_NIGHT = '2030-01-01';
-    const LAST_NIGHT = '2030-11-30';
+    const LAST_NIGHT = '2030-04-29';
+    const CHECK_OUT = '2030-04-30';
 
-    // A requests a long stay; its pre-check passes for every night (nothing is booked yet).
-    const longStay = reserveRoomsForRange(roomId, '2030-01-01', '2030-12-01', 1);
+    // A requests a long stay (119 nights, just inside the 120-night limit); its pre-check
+    // passes for every night (nothing is booked yet).
+    const longStay = reserveRoomsForRange(roomId, FIRST_NIGHT, CHECK_OUT, 1);
 
     // Wait until A has actually committed its first night, so we know it passed the
     // pre-check and is mid-loop. Then B grabs the final night entirely.
@@ -63,7 +65,7 @@ describe('Phase 3.2 — hotel rollback must not release other bookings', () => {
       if (row && row.bookedRooms >= 1) break;
       await sleep(5);
     }
-    const lastNightGrab = reserveRoomsForRange(roomId, LAST_NIGHT, '2030-12-01', 4);
+    const lastNightGrab = reserveRoomsForRange(roomId, LAST_NIGHT, CHECK_OUT, 4);
 
     const [aResult, bResult] = await Promise.allSettled([longStay, lastNightGrab]);
 

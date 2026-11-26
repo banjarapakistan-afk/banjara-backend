@@ -13,6 +13,7 @@ import {
 } from '../../utils/cnic/extract';
 import { assertProcessableCnicImage } from '../../utils/cnic/imageQuality';
 import { buildCnicFieldRegions, buildCnicOcrVariants } from '../../utils/cnic/preprocess';
+import { createConcurrencyGate } from '../../utils/concurrencyGate';
 import { logger } from '../../utils/logger';
 import type { OcrProvider } from './ocr.types';
 import { HttpOcrProvider } from './providers/httpOcr.provider';
@@ -56,8 +57,26 @@ export async function extractCNICData(
   image: Buffer,
   mimeType = 'image/jpeg'
 ): Promise<ExtractedCnicFields & { provider: string }> {
+  // Cheap header checks run first, so a bad upload never waits in the queue or fills it.
   assertProcessableCnicImage(image);
+  return ocrGate(() => runCnicExtraction(image, mimeType));
+}
 
+/**
+ * Decoding and reading a card photo is the most memory-hungry work this API does, and
+ * each read starts its own OCR worker. One at a time, with a short queue, keeps a burst
+ * of uploads inside a small host's memory instead of crashing it.
+ */
+const ocrGate = createConcurrencyGate({
+  maxConcurrent: 1,
+  maxQueued: 3,
+  busyMessage: 'Verification is busy right now. Please try again in a moment.',
+});
+
+async function runCnicExtraction(
+  image: Buffer,
+  mimeType: string
+): Promise<ExtractedCnicFields & { provider: string }> {
   const provider = getOcrProvider();
   let variants: Buffer[];
   try {

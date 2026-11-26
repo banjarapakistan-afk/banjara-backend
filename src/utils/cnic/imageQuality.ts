@@ -38,6 +38,14 @@ function readJpegSize(buf: Buffer): { width: number; height: number } | null {
 }
 
 /**
+ * Upper bounds for an uploaded card photo. A 24-megapixel phone photo passes; anything
+ * larger is refused before it is decoded. The same pixel cap is given to the image
+ * library as a second line of defence.
+ */
+export const CNIC_MAX_SIDE_PX = 8000;
+export const CNIC_MAX_PIXELS = 25_000_000;
+
+/**
  * Basic structural checks only — not authenticity proof.
  * Allows portrait phone photos of a CNIC (common in the wild).
  */
@@ -66,6 +74,17 @@ export function assessImageQuality(buffer: Buffer): ImageQualityResult {
 
   const minSide = Math.min(size.width, size.height);
   const maxSide = Math.max(size.width, size.height);
+  // Decoding cost follows the declared dimensions, not the file size: a few hundred
+  // kilobytes can declare a canvas that needs more memory than the host has.
+  if (maxSide > CNIC_MAX_SIDE_PX || size.width * size.height > CNIC_MAX_PIXELS) {
+    return {
+      ok: false,
+      width: size.width,
+      height: size.height,
+      byteLength,
+      reason: 'dimensions_too_large',
+    };
+  }
   if (minSide < 280 || maxSide < 400) {
     return {
       ok: false,

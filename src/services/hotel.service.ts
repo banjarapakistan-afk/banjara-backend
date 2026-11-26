@@ -16,12 +16,22 @@ export function bookableHotelFilter(): Record<string, unknown> {
   };
 }
 
+/** Longest stay or availability range any request may ask for. */
+export const MAX_RANGE_NIGHTS = 120;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 function datesBetween(checkIn: string, checkOut: string): string[] {
   const dates: string[] = [];
   const start = new Date(checkIn);
   const end = new Date(checkOut);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start >= end) {
     return dates;
+  }
+  // Checked before the loop: every caller does work per night (often a database read),
+  // and several are reachable without signing in, so an unbounded range such as
+  // 2000-01-01 to 9999-12-31 would otherwise pin the process on one request.
+  if ((end.getTime() - start.getTime()) / DAY_MS > MAX_RANGE_NIGHTS) {
+    throw new AppError(`Date range too large (max ${MAX_RANGE_NIGHTS} nights)`, 400);
   }
   for (let d = new Date(start); d < end; d.setDate(d.getDate() + 1)) {
     dates.push(d.toISOString().slice(0, 10));

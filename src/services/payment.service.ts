@@ -27,6 +27,7 @@ import * as notificationService from './notification.service';
 import { confirmTripSeats, releaseTripSeats } from './tripSeat.service';
 import { buildTicketQrDataUrl } from '../utils/qrCode';
 import { log } from '../utils/logger';
+import { env } from '../config/env';
 
 const DEFAULT_PROOF_WINDOW_MINUTES = 30;
 
@@ -74,9 +75,12 @@ export async function createPayment(input: {
     method: input.method,
     status: isP2PMethod(input.method) ? 'unpaid' : 'pending',
     transactionId: txn,
+    // Every unconfirmed booking holds seats or room-nights, so every hold needs an end.
+    // Transfers get the short proof window; cash and pay-at-hotel wait for the provider
+    // to confirm, and are released if that has not happened within the hold period.
     expiresAt: isP2PMethod(input.method)
       ? new Date(Date.now() + DEFAULT_PROOF_WINDOW_MINUTES * 60 * 1000)
-      : undefined,
+      : new Date(Date.now() + env.PAY_LATER_HOLD_HOURS * 60 * 60 * 1000),
     timeline: [
       {
         type: 'booking_created',
@@ -274,8 +278,11 @@ export async function initiateP2PPayment(paymentId: string, actor: PaymentActor,
     const account = await payoutAccounts.getAccountForPayment(p.providerId.toString(), input.accountId, channelForMethod(input.method)!);
     p.method = input.method;
     p.status = 'payment_initiated';
-    // Never extend the inventory hold by reopening payment instructions.
-    p.expiresAt = p.expiresAt ?? new Date(Date.now() + DEFAULT_PROOF_WINDOW_MINUTES * 60_000);
+    // Never extend the inventory hold by reopening payment instructions. A booking that
+    // started as cash carries the longer pay-later hold; switching it to a transfer
+    // brings it down to the normal proof window.
+    const proofDeadline = new Date(Date.now() + DEFAULT_PROOF_WINDOW_MINUTES * 60_000);
+    if (!p.expiresAt || p.expiresAt.getTime() > proofDeadline.getTime()) p.expiresAt = proofDeadline;
     p.receivingAccount = { accountId: account._id.toString(), channel: account.channel,
       label: account.label, accountTitle: account.accountTitle,
       displayIdentifier: maskIdentifier(account.channel, account.identifier), identifier: account.identifier,
@@ -423,17 +430,34 @@ export async function listMyPayments(actor: PaymentActor, query: Record<string, 
   return Promise.all(rows.map((row) => serializePayment(row)));
 }
 
+/**
+ * Payment states in which an unconfirmed booking can still be holding inventory.
+ * `pending` is the cash / pay-at-hotel state while the provider has not confirmed.
+ */
+const EXPIRABLE_PAYMENT_STATUSES: PaymentStatus[] = ['payment_initiated', 'unpaid', 'rejected', 'pending'];
+
 export async function expireStalePayments() {
-  const stale = await Payment.find({ status: { $in: ['payment_initiated', 'unpaid', 'rejected'] }, expiresAt: { $lte: new Date() } }).select('_id').limit(100);
+  const stale = await Payment.find({ status: { $in: EXPIRABLE_PAYMENT_STATUSES }, expiresAt: { $lte: new Date() } }).select('_id').limit(100);
   let expired = 0;
   let notified = 0;
   for (const row of stale) {
     const payment = await paymentTransaction(async session => {
       const p = await Payment.findById(row._id).session(session);
-      if (!p || !['payment_initiated', 'unpaid', 'rejected'].includes(p.status) || !p.expiresAt || p.expiresAt.getTime() > Date.now()) return null;
+      if (!p || !EXPIRABLE_PAYMENT_STATUSES.includes(p.status) || !p.expiresAt || p.expiresAt.getTime() > Date.now()) return null;
       const booking = await Booking.findById(p.bookingId).session(session);
-      if (!booking || !['pending', 'payment_verification'].includes(booking.bookingStatus)) return null;
-      p.status = 'expired'; pushEvent(p, 'expired', 'Payment window ended; booking hold released');
+      if (!booking || !['pending', 'payment_verification'].includes(booking.bookingStatus)) {
+        // Confirmed, cancelled or already closed: there is no hold left to release.
+        // Clear the deadline so this row stops matching. Left in place it would be
+        // picked up on every run, and enough of them would crowd real expiries out of
+        // the batch.
+        p.expiresAt = undefined;
+        await p.save({ session });
+        return null;
+      }
+      p.status = 'expired';
+      pushEvent(p, 'expired', isP2PMethod(p.method)
+        ? 'Payment window ended; booking hold released'
+        : 'Provider did not confirm in time; booking hold released');
       booking.paymentStatus = 'expired'; booking.bookingStatus = 'expired';
       await p.save({ session }); await booking.save({ session });
       if (booking.bookingType === 'transport' && booking.transportBooking) {
@@ -447,7 +471,10 @@ export async function expireStalePayments() {
     });
     if (payment) {
       expired++;
-      if (await notifyCounterpart(payment, 'customer', 'Payment window expired', 'Your reservation hold ended. If you already transferred money, open the payment chat for help.')) notified++;
+      const sent = isP2PMethod(payment.method)
+        ? await notifyCounterpart(payment, 'customer', 'Payment window expired', 'Your reservation hold ended. If you already transferred money, open the payment chat for help.')
+        : await notifyCounterpart(payment, 'customer', 'Booking request expired', 'The provider did not confirm your booking in time, so your reservation was released. You can book again.');
+      if (sent) notified++;
     }
   }
   return { expired, notified };

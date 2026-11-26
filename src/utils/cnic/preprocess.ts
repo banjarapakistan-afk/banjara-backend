@@ -1,4 +1,11 @@
 import sharp from 'sharp';
+import { CNIC_MAX_PIXELS } from './imageQuality';
+
+/**
+ * Options for every decode of an uploaded image. `limitInputPixels` makes the image
+ * library refuse an oversized canvas even if the earlier header check were bypassed.
+ */
+const SHARP_INPUT = { failOn: 'none', limitInputPixels: CNIC_MAX_PIXELS } as const;
 
 export type CnicFieldRegions = {
   father: Buffer[];
@@ -20,8 +27,8 @@ const FIELD_BOXES = {
  * outputs the ID-1 ratio). Returns null when the image isn't card-shaped.
  */
 export async function buildCnicFieldRegions(image: Buffer): Promise<CnicFieldRegions | null> {
-  const oriented = await sharp(image, { failOn: 'none' }).rotate().toBuffer();
-  const meta = await sharp(oriented, { failOn: 'none' }).metadata();
+  const oriented = await sharp(image, SHARP_INPUT).rotate().toBuffer();
+  const meta = await sharp(oriented, SHARP_INPUT).metadata();
   const w = meta.width ?? 0;
   const h = meta.height ?? 0;
   if (!w || !h) return null;
@@ -33,7 +40,7 @@ export async function buildCnicFieldRegions(image: Buffer): Promise<CnicFieldReg
     const top = Math.max(0, Math.floor(h * box[1]));
     const width = Math.min(w - left, Math.floor(w * (box[2] - box[0])));
     const height = Math.min(h - top, Math.floor(h * (box[3] - box[1])));
-    const region = await sharp(oriented, { failOn: 'none' })
+    const region = await sharp(oriented, SHARP_INPUT)
       .extract({ left, top, width, height })
       .resize({ width: 1200, withoutEnlargement: false })
       .grayscale()
@@ -60,11 +67,11 @@ export async function buildCnicFieldRegions(image: Buffer): Promise<CnicFieldReg
  * extractor merge fields across them.
  */
 export async function buildCnicOcrVariants(image: Buffer): Promise<Buffer[]> {
-  const meta = await sharp(image, { failOn: 'none' }).rotate().metadata();
+  const meta = await sharp(image, SHARP_INPUT).rotate().metadata();
   const width = meta.width ?? 0;
   const height = meta.height ?? 0;
 
-  const resized = await sharp(image, { failOn: 'none' })
+  const resized = await sharp(image, SHARP_INPUT)
     .rotate() // honour EXIF
     .resize({
       width: width >= height ? 2000 : undefined,
@@ -75,7 +82,7 @@ export async function buildCnicOcrVariants(image: Buffer): Promise<Buffer[]> {
     .toBuffer();
 
   const toGrayJpeg = (input: Buffer) =>
-    sharp(input, { failOn: 'none' })
+    sharp(input, SHARP_INPUT)
       .grayscale()
       .normalize()
       .sharpen({ sigma: 1.2 })
@@ -83,7 +90,7 @@ export async function buildCnicOcrVariants(image: Buffer): Promise<Buffer[]> {
       .toBuffer();
 
   const toThresholdJpeg = (input: Buffer) =>
-    sharp(input, { failOn: 'none' })
+    sharp(input, SHARP_INPUT)
       .grayscale()
       .normalize()
       .linear(1.3, -24)
@@ -100,14 +107,14 @@ export async function buildCnicOcrVariants(image: Buffer): Promise<Buffer[]> {
     // keep upright
   }
 
-  const uprightMeta = await sharp(upright, { failOn: 'none' }).metadata();
+  const uprightMeta = await sharp(upright, SHARP_INPUT).metadata();
   const uw = uprightMeta.width ?? 0;
   const uh = uprightMeta.height ?? 0;
 
   // Right half = Identity Number + dates; left = names; bottom-right = expiry line
   if (uw > uh && uw > 400 && uh > 200) {
     try {
-      const right = await sharp(upright, { failOn: 'none' })
+      const right = await sharp(upright, SHARP_INPUT)
         .extract({
           left: Math.floor(uw * 0.4),
           top: 0,
@@ -117,13 +124,13 @@ export async function buildCnicOcrVariants(image: Buffer): Promise<Buffer[]> {
         .toBuffer();
       variants.push(await toThresholdJpeg(right));
 
-      const left = await sharp(upright, { failOn: 'none' })
+      const left = await sharp(upright, SHARP_INPUT)
         .extract({ left: 0, top: 0, width: Math.floor(uw * 0.65), height: uh })
         .toBuffer();
       variants.push(await toGrayJpeg(left));
 
       // Bottom band often holds Date of Issue / Date of Expiry
-      const bottom = await sharp(upright, { failOn: 'none' })
+      const bottom = await sharp(upright, SHARP_INPUT)
         .extract({
           left: Math.floor(uw * 0.35),
           top: Math.floor(uh * 0.55),
@@ -141,7 +148,7 @@ export async function buildCnicOcrVariants(image: Buffer): Promise<Buffer[]> {
   for (const angle of [90, 270] as const) {
     try {
       variants.push(
-        await toGrayJpeg(await sharp(upright, { failOn: 'none' }).rotate(angle).toBuffer())
+        await toGrayJpeg(await sharp(upright, SHARP_INPUT).rotate(angle).toBuffer())
       );
     } catch {
       // skip

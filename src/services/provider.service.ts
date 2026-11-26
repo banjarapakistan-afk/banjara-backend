@@ -6,7 +6,78 @@ import { Vehicle } from '../models/Vehicle';
 import { AppError, assertFound } from '../utils/AppError';
 import type { ProviderService, ProviderType, VerificationStatus } from '../types/provider.types';
 import * as bookingService from './booking.service';
-import { publicGuideDetails } from './guide.service';
+import { protectGuideReviewFields, publicGuideDetails } from './guide.service';
+import type { GuideDetails } from '../types/guide.types';
+import { escapeRegex } from '../utils/regex';
+
+type PlainProvider = Record<string, any>;
+
+/** Admin-only review, commission and identity fields. Never part of a public payload. */
+const PRIVATE_PROVIDER_FIELDS = [
+  'identityVerification',
+  'platformFeePercent',
+  'rejectionReason',
+  'onboarding',
+  'documents',
+  'cnicFront',
+  'cnicBack',
+  '__v',
+];
+
+/** Lodging registration detail collected for admin review only. */
+const PRIVATE_HOTEL_DETAIL_FIELDS = ['businessRegistrationNumber'];
+
+/**
+ * Driver and vehicle details a traveller may see. Identity and contact fields (CNIC,
+ * licence, home address, emergency contact, engine and insurance numbers) are left out.
+ */
+function publicTransportDetails(transport: PlainProvider | undefined | null) {
+  if (!transport) return undefined;
+  return {
+    businessName: transport.businessName,
+    vehicleTypes: transport.vehicleTypes,
+    vehicleCount: transport.vehicleCount,
+    ownershipType: transport.ownershipType,
+    operatingCities: transport.operatingCities,
+    operatingRoutes: transport.operatingRoutes,
+    pickupLocations: transport.pickupLocations,
+    dropoffLocations: transport.dropoffLocations,
+    description: transport.description,
+    pricingMethod: transport.pricingMethod,
+    priceAmount: transport.priceAmount,
+    pricePercent: transport.pricePercent,
+    vehicleClass: transport.vehicleClass,
+    ownerName: transport.ownerName,
+    vehicleModel: transport.vehicleModel,
+    vehicleMakeYear: transport.vehicleMakeYear,
+    registrationNumber: transport.registrationNumber,
+    driverName: transport.driverName,
+    hasInsurance: transport.hasInsurance,
+    insuranceCompany: transport.insuranceCompany,
+    driverExperienceYears: transport.driverExperienceYears,
+    vehicleImageFront: transport.vehicleImageFront,
+    vehicleImageBack: transport.vehicleImageBack,
+    driverPhoto: transport.driverPhoto,
+  };
+}
+
+/**
+ * The one traveller-facing shape of a provider profile. Every public endpoint must go
+ * through this: returning a raw ProviderProfile document publishes identity documents,
+ * the commission rate and admin review notes.
+ */
+export function publicProviderView(profile: PlainProvider) {
+  const view: PlainProvider = { ...profile };
+  for (const field of PRIVATE_PROVIDER_FIELDS) delete view[field];
+  view.transportDetails = publicTransportDetails(profile.transportDetails);
+  view.guideDetails = publicGuideDetails(profile.guideDetails as never);
+  if (profile.hotelDetails && typeof profile.hotelDetails === 'object') {
+    const hotel: PlainProvider = { ...profile.hotelDetails };
+    for (const field of PRIVATE_HOTEL_DETAIL_FIELDS) delete hotel[field];
+    view.hotelDetails = hotel;
+  }
+  return view;
+}
 
 function uniqueUrls(values: Array<string | undefined | null>) {
   const seen = new Set<string>();
@@ -82,7 +153,10 @@ export async function registerProvider(
     hotelDetails: input.hotelDetails,
     tourDetails: input.tourDetails,
     restaurantDetails: input.restaurantDetails,
-    guideDetails: input.guideDetails,
+    // A new guide can never arrive already approved or with pre-verified documents.
+    guideDetails: input.guideDetails
+      ? protectGuideReviewFields(undefined, input.guideDetails as GuideDetails)
+      : input.guideDetails,
   });
 
   return profile;
@@ -135,7 +209,14 @@ export async function updateMyProvider(userId: string, patch: Record<string, unk
     profile.markModified('restaurantDetails');
   }
   if (guideDetails && typeof guideDetails === 'object') {
-    profile.set('guideDetails', guideDetails);
+    // Review status, the admin note and document verification belong to admins.
+    profile.set(
+      'guideDetails',
+      protectGuideReviewFields(
+        profile.guideDetails as GuideDetails | undefined,
+        guideDetails as GuideDetails
+      )
+    );
     profile.markModified('guideDetails');
   }
 
@@ -223,15 +304,21 @@ export async function searchProviderCatalog(query: {
   };
   if (service) filter.services = service;
   if (city) {
+    // Match the text literally: a raw pattern can throw or backtrack badly.
+    const cityPattern = new RegExp(escapeRegex(city), 'i');
     filter.$or = [
-      { city: new RegExp(city, 'i') },
-      { 'restaurantDetails.city': new RegExp(city, 'i') },
-      { 'tourDetails.destination': new RegExp(city, 'i') },
-      { address: new RegExp(city, 'i') },
+      { city: cityPattern },
+      { 'restaurantDetails.city': cityPattern },
+      { 'tourDetails.destination': cityPattern },
+      { address: cityPattern },
     ];
   }
 
-  return ProviderProfile.find(filter).sort({ rating: -1, createdAt: -1 }).limit(limit);
+  const rows = await ProviderProfile.find(filter)
+    .sort({ rating: -1, createdAt: -1 })
+    .limit(limit)
+    .lean();
+  return rows.map((row) => publicProviderView(row));
 }
 
 /** Traveler-facing provider card — omit identity docs and private contact fields. */
@@ -244,34 +331,8 @@ export async function getPublicProviderById(id: string) {
     .select('name type images seatCount brand vehicleModel registrationNumber')
     .lean();
 
-  const transport = profile.transportDetails
-    ? {
-        businessName: profile.transportDetails.businessName,
-        vehicleTypes: profile.transportDetails.vehicleTypes,
-        vehicleCount: profile.transportDetails.vehicleCount,
-        ownershipType: profile.transportDetails.ownershipType,
-        operatingCities: profile.transportDetails.operatingCities,
-        operatingRoutes: profile.transportDetails.operatingRoutes,
-        pickupLocations: profile.transportDetails.pickupLocations,
-        dropoffLocations: profile.transportDetails.dropoffLocations,
-        description: profile.transportDetails.description,
-        pricingMethod: profile.transportDetails.pricingMethod,
-        priceAmount: profile.transportDetails.priceAmount,
-        pricePercent: profile.transportDetails.pricePercent,
-        vehicleClass: profile.transportDetails.vehicleClass,
-        ownerName: profile.transportDetails.ownerName,
-        vehicleModel: profile.transportDetails.vehicleModel,
-        vehicleMakeYear: profile.transportDetails.vehicleMakeYear,
-        registrationNumber: profile.transportDetails.registrationNumber,
-        driverName: profile.transportDetails.driverName,
-        hasInsurance: profile.transportDetails.hasInsurance,
-        insuranceCompany: profile.transportDetails.insuranceCompany,
-        driverExperienceYears: profile.transportDetails.driverExperienceYears,
-        vehicleImageFront: profile.transportDetails.vehicleImageFront,
-        vehicleImageBack: profile.transportDetails.vehicleImageBack,
-        driverPhoto: profile.transportDetails.driverPhoto,
-      }
-    : undefined;
+  const view = publicProviderView(profile);
+  const transport = view.transportDetails as ReturnType<typeof publicTransportDetails>;
 
   const hotel = profile.hotelDetails as Record<string, unknown> | undefined;
   const tour = profile.tourDetails as Record<string, unknown> | undefined;
@@ -295,7 +356,7 @@ export async function getPublicProviderById(id: string) {
   ]);
 
   return {
-    ...profile,
+    ...view,
     transportDetails: transport,
     guideDetails: guide,
     galleryImages,

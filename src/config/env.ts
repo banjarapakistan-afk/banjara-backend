@@ -64,6 +64,11 @@ const envSchema = z.object({
   /** Minutes a booking stays pending before the provider gets a reminder. */
   PENDING_BOOKING_REMINDER_MINUTES: z.coerce.number().default(10),
   /**
+   * Hours a cash or pay-at-hotel booking may hold seats or rooms while it waits for the
+   * provider to confirm. After that the booking expires and the hold is released.
+   */
+  PAY_LATER_HOLD_HOURS: z.coerce.number().positive().default(24),
+  /**
    * City to City rides. Hard kill switch (off unless set); the runtime on/off and all
    * prices and windows live in the IntercitySettings document.
    */

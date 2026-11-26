@@ -473,6 +473,7 @@ this backend.
 | `OCR_PROVIDER`, `OCR_API_KEY`, `OCR_API_URL` | no | CNIC OCR mode and optional HTTP provider settings |
 | `JOBS_ENABLED`, `JOBS_INTERVAL_MS` | no | Enable maintenance and set its interval |
 | `PENDING_BOOKING_REMINDER_MINUTES` | no | Age of pending bookings before reminders |
+| `PAY_LATER_HOLD_HOURS` | no | Hours a cash / pay-at-hotel booking holds inventory before it expires unconfirmed; default `24` |
 | `ALLOW_DESTRUCTIVE_SEED` | no | Required (set to `yes`) to seed a non-local DB |
 | `ADMIN_EMAIL`, `ADMIN_PASSWORD` | bootstrap only | Used by `npm run bootstrap` |
 | `LOG_LEVEL` | no | pino level; defaults to `info` in production |
@@ -633,9 +634,12 @@ and can use payment chat if funds have not arrived.
 
 Reset tokens are hashed, expire in 15 minutes, are single-use, and are throttled
 per account. No delivery provider is wired: `src/services/notification/passwordResetDelivery.ts`
-logs the token in non-production and **throws in production**, making the missing
-provider a loud failure rather than a silent hole. Configure a provider there before
-relying on password reset in production.
+logs the token in non-production and **throws in production**. The API catches that
+failure, writes a `[password-reset] delivery failed` error to the log, and still returns
+the same generic response it gives for an unknown email, so the endpoint never reveals
+which addresses are registered. Until a provider is configured there, no reset message
+is sent in production: watch for that log line and configure a provider before relying
+on password reset.
 
 ## Booking consistency
 

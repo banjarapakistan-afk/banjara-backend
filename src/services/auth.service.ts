@@ -10,6 +10,7 @@ import { User, type IUser } from '../models/User';
 import { PasswordResetToken } from '../models/PasswordResetToken';
 import { deliverPasswordResetToken } from './notification/passwordResetDelivery';
 import { AppError, assertFound } from '../utils/AppError';
+import { log } from '../utils/logger';
 import type { LoginInput, RegisterInput, SessionContext } from '../types/auth.types';
 import { env } from '../config/env';
 
@@ -279,7 +280,15 @@ export async function forgotPassword(email: string) {
     expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
   });
 
-  await deliverPasswordResetToken(user.email, token);
+  try {
+    await deliverPasswordResetToken(user.email, token);
+  } catch (err) {
+    // The caller must not be able to tell a registered address from an unknown one. A
+    // delivery failure (including "no provider configured" in production) is an
+    // operator problem: log it loudly and answer exactly as the unknown-email branch
+    // does. The token is never logged.
+    log().error({ err, userId: user._id.toString() }, '[password-reset] delivery failed');
+  }
   return { message: GENERIC_RESET_MESSAGE };
 }
 

@@ -9,6 +9,7 @@ import type {
 } from '../types/guide.types';
 import { DEFAULT_GUIDE_WEEKLY } from '../types/guide.types';
 import { AppError, assertFound } from '../utils/AppError';
+import { escapeRegex } from '../utils/regex';
 import { randomUUID } from 'crypto';
 
 function asGuide(profile: { guideDetails?: GuideDetails | null; tourDetails?: Record<string, unknown> }) {
@@ -112,12 +113,46 @@ export async function getMyGuide(providerId: string) {
   };
 }
 
-export async function upsertGuideDetails(providerId: string, patch: GuideDetails, submit = false) {
+/**
+ * Review fields belong to admins. A guide may edit their profile, but never its review
+ * status, the admin's note, or the verification status of an uploaded document.
+ *
+ * The profile body is accepted with unknown keys so the onboarding form can grow, which
+ * means whatever the client sends for these fields has to be discarded here: the stored
+ * value always wins. A new or replaced document goes back to `pending`.
+ */
+export function protectGuideReviewFields(
+  current: GuideDetails | undefined | null,
+  incoming: GuideDetails
+): GuideDetails {
+  const { profileStatus: _status, changesRequestedNote: _note, ...editable } = incoming;
+  const next: GuideDetails = { ...editable };
+
+  if (Array.isArray(incoming.documents)) {
+    const stored = new Map((current?.documents ?? []).map((doc) => [doc.id, doc]));
+    next.documents = incoming.documents.map((doc) => {
+      const previous = doc.id ? stored.get(doc.id) : undefined;
+      const unchanged = Boolean(previous && previous.fileUrl === doc.fileUrl);
+      return {
+        ...doc,
+        status: unchanged ? previous!.status : 'pending',
+        rejectionReason: unchanged ? previous!.rejectionReason : undefined,
+      };
+    });
+  }
+
+  if (current?.profileStatus) next.profileStatus = current.profileStatus;
+  if (current?.changesRequestedNote) next.changesRequestedNote = current.changesRequestedNote;
+  return next;
+}
+
+export async function upsertGuideDetails(providerId: string, incoming: GuideDetails, submit = false) {
   const profile = assertFound(await ProviderProfile.findById(providerId), 'Provider not found');
   if (!profile.services?.includes('travelGuide')) {
     throw new AppError('Not a guide provider', 400);
   }
   const current = asGuide(profile as never);
+  const patch = protectGuideReviewFields(current, incoming);
   const next: GuideDetails = {
     ...current,
     ...patch,
@@ -422,7 +457,8 @@ export async function searchGuides(query: {
     verificationStatus: 'approved',
   };
   if (query.destination) {
-    const re = new RegExp(query.destination.trim(), 'i');
+    // Match the text literally: a raw pattern can throw or backtrack badly.
+    const re = new RegExp(escapeRegex(query.destination.trim()), 'i');
     filter.$or = [
       { city: re },
       { 'guideDetails.city': re },

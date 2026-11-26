@@ -973,6 +973,11 @@ export async function updateProviderBookingStatus(
           throw new AppError('Confirm receipt of the customer payment first.', 409);
         }
         if (['card', 'mobileWallet'].includes(payment.method)) throw new AppError('Gateway payments are unavailable', 409);
+        // The pay-later hold deadline only applies while the booking is unconfirmed.
+        if (!isP2PMethod(payment.method) && payment.expiresAt) {
+          payment.expiresAt = undefined;
+          await payment.save({ session });
+        }
       }
       if (current.bookingType === 'transport' && current.transportBooking) {
         await confirmTripSeats(current.transportBooking.tripId, current.transportBooking.seats, session);
